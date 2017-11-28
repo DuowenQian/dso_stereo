@@ -820,25 +820,25 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 
 	// =========================== make Images / derivatives etc. =========================
 	fh->ab_exposure = image->exposure_time;
-    fh->makeImages(image->image, &Hcalib);
-
+    fh->makeImages(image->image, &Hcalib);  // where Hcalib is a CalibHessian and a private property of FullSystem. see HessianBlocks.h
+    										// make the fh object using ImageAndExposure and Hcalib. fh now contains all the data.
 
 
 
 	if(!initialized)
 	{
-		// use initializer!
+		// use initializer! 				// NOTE: coarseInitializer->frameID is initialized with value of -1.
 		if(coarseInitializer->frameID<0)	// first frame set. fh is kept by coarseInitializer.
 		{
 
-			coarseInitializer->setFirst(&Hcalib, fh);
+			coarseInitializer->setFirst(&Hcalib, fh); //runs twice.
 		}
-		else if(coarseInitializer->trackFrame(fh, outputWrapper))	// if SNAPPED
+		else if(coarseInitializer->trackFrame(fh, outputWrapper))	// if SNAPPED (activates when there is motion) ONLY RUNS ONCE, then sets initialized to true.
 		{
 
 			initializeFromInitializer(fh);
 			lock.unlock();
-			deliverTrackedFrame(fh, true);
+			deliverTrackedFrame(fh, true); // Deliver the tracked frame for display purposes?
 		}
 		else
 		{
@@ -851,25 +851,25 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 	else	// do front-end operation.
 	{
 		// =========================== SWAP tracking reference?. =========================
-		if(coarseTracker_forNewKF->refFrameID > coarseTracker->refFrameID)
+		if(coarseTracker_forNewKF->refFrameID > coarseTracker->refFrameID) // if a new KeyFrame was made
 		{
-			boost::unique_lock<boost::mutex> crlock(coarseTrackerSwapMutex);
-			CoarseTracker* tmp = coarseTracker; coarseTracker=coarseTracker_forNewKF; coarseTracker_forNewKF=tmp;
+			boost::unique_lock<boost::mutex> crlock(coarseTrackerSwapMutex); // lock
+			CoarseTracker* tmp = coarseTracker; coarseTracker=coarseTracker_forNewKF; coarseTracker_forNewKF=tmp; //swap reference
 		}
 
 
-		Vec4 tres = trackNewCoarse(fh);
+		Vec4 tres = trackNewCoarse(fh); // WHERE THE MAGIC HAPPENS. Track motion of new frame.
 		if(!std::isfinite((double)tres[0]) || !std::isfinite((double)tres[1]) || !std::isfinite((double)tres[2]) || !std::isfinite((double)tres[3]))
         {
             printf("Initial Tracking failed: LOST!\n");
 			isLost=true;
             return;
         }
-
+		// =========================== Create new KF?. =========================
 		bool needToMakeKF = false;
-		if(setting_keyframesPerSecond > 0)
+		if(setting_keyframesPerSecond > 0) // if a certain keyframesPerSecond is required,
 		{
-			needToMakeKF = allFrameHistory.size()== 1 ||
+			needToMakeKF = allFrameHistory.size()== 1 || //make KF if first frame or if required time has come
 					(fh->shell->timestamp - allKeyFramesHistory.back()->timestamp) > 0.95f/setting_keyframesPerSecond;
 		}
 		else
@@ -897,7 +897,7 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 
 
 		lock.unlock();
-		deliverTrackedFrame(fh, needToMakeKF);
+		deliverTrackedFrame(fh, needToMakeKF); // Deliver the tracked frame for display purposes?
 		return;
 	}
 }
@@ -905,9 +905,9 @@ void FullSystem::deliverTrackedFrame(FrameHessian* fh, bool needKF)
 {
 
 
-	if(linearizeOperation)
+	if(linearizeOperation) // default is true. false when playbackSpeed!=0 in main_dso_pangolin.cpp
 	{
-		if(goStepByStep && lastRefStopID != coarseTracker->refFrameID)
+		if(goStepByStep && lastRefStopID != coarseTracker->refFrameID) //goStepByStep is false by default. lastRefStopID is 0 by default.
 		{
 			MinimalImageF3 img(wG[0], hG[0], fh->dI);
 			IOWrap::displayImage("frameToTrack", &img);
@@ -923,14 +923,14 @@ void FullSystem::deliverTrackedFrame(FrameHessian* fh, bool needKF)
 
 
 
-		if(needKF) makeKeyFrame(fh);
+		if(needKF) makeKeyFrame(fh); // this will also update the refFrameID of coarseTracker_forNewKF
 		else makeNonKeyFrame(fh);
 	}
 	else
 	{
 		boost::unique_lock<boost::mutex> lock(trackMapSyncMutex);
-		unmappedTrackedFrames.push_back(fh);
-		if(needKF) needNewKFAfter=fh->shell->trackingRef->id;
+		unmappedTrackedFrames.push_back(fh); // where unmappedTrackedFrames is a deque (double ended queue)
+		if(needKF) needNewKFAfter=fh->shell->trackingRef->id; // if KF is needed, store current frame id in needNewKFAfter. (NOT SURE IF EVER USED)
 		trackedFrameSignal.notify_all();
 
 		while(coarseTracker_forNewKF->refFrameID == -1 && coarseTracker->refFrameID == -1 )

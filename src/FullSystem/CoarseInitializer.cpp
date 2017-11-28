@@ -82,8 +82,8 @@ bool CoarseInitializer::trackFrame(FrameHessian* newFrameHessian, std::vector<IO
 {
 	newFrame = newFrameHessian;
 
-    for(IOWrap::Output3DWrapper* ow : wraps)
-        ow->pushLiveFrame(newFrameHessian);
+    for(IOWrap::Output3DWrapper* ow : wraps) // for each wrapper
+        ow->pushLiveFrame(newFrameHessian); // pushLiveFrame (to Pangolin for example)
 
 	int maxIterations[] = {5,5,10,30,50};
 
@@ -181,7 +181,7 @@ bool CoarseInitializer::trackFrame(FrameHessian* newFrameHessian, std::vector<IO
 
 
 			Mat88f H_new, Hsc_new; Vec8f b_new, bsc_new;
-			Vec3f resNew = calcResAndGS(lvl, H_new, b_new, Hsc_new, bsc_new, refToNew_new, refToNew_aff_new, false);
+			Vec3f resNew = calcResAndGS(lvl, H_new, b_new, Hsc_new, bsc_new, refToNew_new, refToNew_aff_new, false); //calculates residual, Hessian and Hessian-block needed for re-substituting depth.
 			Vec3f regEnergy = calcEC(lvl);
 
 			float eTotalNew = (resNew[0]+resNew[1]+regEnergy[1]);
@@ -767,43 +767,43 @@ void CoarseInitializer::makeGradients(Eigen::Vector3f** data)
 void CoarseInitializer::setFirst(	CalibHessian* HCalib, FrameHessian* newFrameHessian)
 {
 
-	makeK(HCalib);
+	makeK(HCalib); // uses fx fy cx cy from HCalib to make the K matrix for each pyramid level.
 	firstFrame = newFrameHessian;
 
-	PixelSelector sel(w[0],h[0]);
+	PixelSelector sel(w[0],h[0]);  // Construct PixelSelector called sel with w[0] and h[0] as input parameters
 
 	float* statusMap = new float[w[0]*h[0]];
 	bool* statusMapB = new bool[w[0]*h[0]];
 
 	float densities[] = {0.03,0.05,0.15,0.5,1};
-	for(int lvl=0; lvl<pyrLevelsUsed; lvl++)
+	for(int lvl=0; lvl<pyrLevelsUsed; lvl++) // for each pyramid level
 	{
 		sel.currentPotential = 3;
 		int npts;
 		if(lvl == 0)
-			npts = sel.makeMaps(firstFrame, statusMap,densities[lvl]*w[0]*h[0],1,false,2);
+			npts = sel.makeMaps(firstFrame, statusMap,densities[lvl]*w[0]*h[0],1,false,2); //Not sure what this does
 		else
 			npts = makePixelStatus(firstFrame->dIp[lvl], statusMapB, w[lvl], h[lvl], densities[lvl]*w[0]*h[0]);
-
+		// npts = number of points to be evaluated?
 
 
 		if(points[lvl] != 0) delete[] points[lvl];
-		points[lvl] = new Pnt[npts];
+		points[lvl] = new Pnt[npts];  // initialize npts points
 
 		// set idepth map to initially 1 everywhere.
 		int wl = w[lvl], hl = h[lvl];
 		Pnt* pl = points[lvl];
 		int nl = 0;
-		for(int y=patternPadding+1;y<hl-patternPadding-2;y++)
+		for(int y=patternPadding+1;y<hl-patternPadding-2;y++) // for each pixel in image
 		for(int x=patternPadding+1;x<wl-patternPadding-2;x++)
 		{
 			//if(x==2) printf("y=%d!\n",y);
-			if((lvl!=0 && statusMapB[x+y*wl]) || (lvl==0 && statusMap[x+y*wl] != 0))
+			if((lvl!=0 && statusMapB[x+y*wl]) || (lvl==0 && statusMap[x+y*wl] != 0)) //if not first pyramid scale and
 			{
 				//assert(patternNum==9);
 				pl[nl].u = x+0.1;
 				pl[nl].v = y+0.1;
-				pl[nl].idepth = 1;
+				pl[nl].idepth = 1;  //set idepth map to initially 1 everywhere
 				pl[nl].iR = 1;
 				pl[nl].isGood=true;
 				pl[nl].energy.setZero();
@@ -949,7 +949,7 @@ void CoarseInitializer::makeK(CalibHessian* HCalib)
 
 	for (int level = 0; level < pyrLevelsUsed; ++ level)
 	{
-		K[level]  << fx[level], 0.0, cx[level], 0.0, fy[level], cy[level], 0.0, 0.0, 1.0;
+		K[level]  << fx[level], 0.0, cx[level], 0.0, fy[level], cy[level], 0.0, 0.0, 1.0; // where << is the insertion operator?
 		Ki[level] = K[level].inverse();
 		fxi[level] = Ki[level](0,0);
 		fyi[level] = Ki[level](1,1);
