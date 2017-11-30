@@ -53,7 +53,7 @@
 #include "IOWrapper/Output3DWrapper.h"
 
 #include "util/ImageAndExposure.h"
-
+#include <opencv2/core/core.hpp> //include openCV
 #include <cmath>
 
 namespace dso
@@ -799,6 +799,114 @@ void FullSystem::flagPointsForRemoval()
 }
 
 
+void FullSystem::addActiveFrame( ImageAndExposure* image, cv::Mat &depth_image, int id )
+{
+	// TEST
+	float mDepthMapFactor = 1000;
+	cv::Mat imDepth = depth_image;
+    if((fabs(mDepthMapFactor-1.0f)>1e-5) || imDepth.type()!=CV_32F)
+        imDepth.convertTo(imDepth,CV_32F,mDepthMapFactor);
+
+    if(isLost) return;
+	boost::unique_lock<boost::mutex> lock(trackMutex);
+
+
+	// =========================== add into allFrameHistory =========================
+	FrameHessian* fh = new FrameHessian();
+	FrameShell* shell = new FrameShell();
+	shell->camToWorld = SE3(); 		// no lock required, as fh is not used anywhere yet.
+	shell->aff_g2l = AffLight(0,0);
+    shell->marginalizedAt = shell->id = allFrameHistory.size();
+    shell->timestamp = image->timestamp;
+    shell->incoming_id = id;
+	fh->shell = shell;
+	allFrameHistory.push_back(shell);
+
+
+	// =========================== make Images / derivatives etc. =========================
+	fh->ab_exposure = image->exposure_time;
+    fh->makeImages(image->image, &Hcalib);  // where Hcalib is a CalibHessian and a private property of FullSystem. see HessianBlocks.h
+    										// make the fh object using ImageAndExposure and Hcalib. fh now contains all the data.
+
+
+
+	if(!initialized)
+	{
+		// use initializer! 				// NOTE: coarseInitializer->frameID is initialized with value of -1.
+		if(coarseInitializer->frameID<0)	// first frame set. fh is kept by coarseInitializer.
+		{
+
+			coarseInitializer->setFirst(&Hcalib, fh); //runs twice.
+		}
+		else if(coarseInitializer->trackFrame(fh, outputWrapper))	// if SNAPPED (activates when there is motion) ONLY RUNS ONCE, then sets initialized to true.
+		{
+
+			initializeFromInitializer(fh);
+			lock.unlock();
+			deliverTrackedFrame(fh, true); // Deliver the tracked frame for display purposes?
+		}
+		else
+		{
+			// if still initializing
+			fh->shell->poseValid = false;
+			delete fh;
+		}
+		return;
+	}
+	else	// do front-end operation.
+	{
+		// =========================== SWAP tracking reference?. =========================
+		if(coarseTracker_forNewKF->refFrameID > coarseTracker->refFrameID) // if a new KeyFrame was made
+		{
+			boost::unique_lock<boost::mutex> crlock(coarseTrackerSwapMutex); // lock
+			CoarseTracker* tmp = coarseTracker; coarseTracker=coarseTracker_forNewKF; coarseTracker_forNewKF=tmp; //swap reference
+		}
+
+
+		Vec4 tres = trackNewCoarse(fh); // WHERE THE MAGIC HAPPENS. Track motion of new frame.
+		if(!std::isfinite((double)tres[0]) || !std::isfinite((double)tres[1]) || !std::isfinite((double)tres[2]) || !std::isfinite((double)tres[3]))
+        {
+            printf("Initial Tracking failed: LOST!\n");
+			isLost=true;
+            return;
+        }
+		// =========================== Create new KF?. =========================
+		bool needToMakeKF = false;
+		if(setting_keyframesPerSecond > 0) // if a certain keyframesPerSecond is required,
+		{
+			needToMakeKF = allFrameHistory.size()== 1 || //make KF if first frame or if required time has come
+					(fh->shell->timestamp - allKeyFramesHistory.back()->timestamp) > 0.95f/setting_keyframesPerSecond;
+		}
+		else
+		{
+			Vec2 refToFh=AffLight::fromToVecExposure(coarseTracker->lastRef->ab_exposure, fh->ab_exposure,
+					coarseTracker->lastRef_aff_g2l, fh->shell->aff_g2l);
+
+			// BRIGHTNESS CHECK
+			needToMakeKF = allFrameHistory.size()== 1 ||
+					setting_kfGlobalWeight*setting_maxShiftWeightT *  sqrtf((double)tres[1]) / (wG[0]+hG[0]) +
+					setting_kfGlobalWeight*setting_maxShiftWeightR *  sqrtf((double)tres[2]) / (wG[0]+hG[0]) +
+					setting_kfGlobalWeight*setting_maxShiftWeightRT * sqrtf((double)tres[3]) / (wG[0]+hG[0]) +
+					setting_kfGlobalWeight*setting_maxAffineWeight * fabs(logf((float)refToFh[0])) > 1 ||
+					2*coarseTracker->firstCoarseRMSE < tres[0];
+
+		}
+
+
+
+
+        for(IOWrap::Output3DWrapper* ow : outputWrapper)
+            ow->publishCamPose(fh->shell, &Hcalib);
+
+
+
+
+		lock.unlock();
+		deliverTrackedFrame(fh, needToMakeKF); // Deliver the tracked frame for display purposes?
+		return;
+	}
+}
+
 void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 {
 
@@ -901,6 +1009,7 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 		return;
 	}
 }
+
 void FullSystem::deliverTrackedFrame(FrameHessian* fh, bool needKF)
 {
 

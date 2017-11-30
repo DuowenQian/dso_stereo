@@ -39,7 +39,7 @@
 #include "util/IndexThreadReduce.h"
 #include "OptimizationBackend/EnergyFunctional.h"
 #include "FullSystem/PixelSelector2.h"
-
+#include <opencv2/core/core.hpp> //include openCV
 #include <math.h>
 
 namespace dso
@@ -137,6 +137,7 @@ public:
 
 	// adds a new frame, and creates point & residual structs.
 	void addActiveFrame(ImageAndExposure* image, int id);
+	void addActiveFrame(ImageAndExposure* image, cv::Mat &depth_image, int id);
 
 	// marginalizes a frame. drops / marginalizes points & residuals.
 	void marginalizeFrame(FrameHessian* frame);
