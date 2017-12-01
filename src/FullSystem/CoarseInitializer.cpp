@@ -96,8 +96,8 @@ bool CoarseInitializer::trackFrame(FrameHessian* newFrameHessian, std::vector<IO
 
 	if(!snapped)
 	{
-		thisToNext.translation().setZero();
-		for(int lvl=0;lvl<pyrLevelsUsed;lvl++)
+		thisToNext.translation().setZero(); // set thisToNext SE3 translation to zero
+/*		for(int lvl=0;lvl<pyrLevelsUsed;lvl++)  // are these even used??? May not be needed.
 		{
 			int npts = numPoints[lvl];
 			Pnt* ptsl = points[lvl];
@@ -108,10 +108,11 @@ bool CoarseInitializer::trackFrame(FrameHessian* newFrameHessian, std::vector<IO
 				ptsl[i].lastHessian = 0;
 			}
 		}
+*/
 	}
 
 
-	SE3 refToNew_current = thisToNext;
+	SE3 refToNew_current = thisToNext; // SE3 transformation between reference frame and new frame.
 	AffLight refToNew_aff_current = thisToNext_aff;
 
 	if(firstFrame->ab_exposure>0 && newFrame->ab_exposure>0)
@@ -121,8 +122,6 @@ bool CoarseInitializer::trackFrame(FrameHessian* newFrameHessian, std::vector<IO
 	Vec3f latestRes = Vec3f::Zero();
 	for(int lvl=pyrLevelsUsed-1; lvl>=0; lvl--)
 	{
-
-
 
 		if(lvl<pyrLevelsUsed-1)
 			propagateDown(lvl+1);
@@ -135,7 +134,7 @@ bool CoarseInitializer::trackFrame(FrameHessian* newFrameHessian, std::vector<IO
 		float lambda = 0.1;
 		float eps = 1e-4;
 		int fails=0;
-
+/* DEBUG STUFF, NOT USED
 		if(printDebug)
 		{
 			printf("lvl %d, it %d (l=%f) %s: %.3f+%.5f -> %.3f+%.5f (%.3f->%.3f) (|inc| = %f)! \t",
@@ -150,7 +149,7 @@ bool CoarseInitializer::trackFrame(FrameHessian* newFrameHessian, std::vector<IO
 					0.0f);
 			std::cout << refToNew_current.log().transpose() << " AFF " << refToNew_aff_current.vec().transpose() <<"\n";
 		}
-
+*/
 		int iteration=0;
 		while(true)
 		{
@@ -184,11 +183,11 @@ bool CoarseInitializer::trackFrame(FrameHessian* newFrameHessian, std::vector<IO
 			Vec3f resNew = calcResAndGS(lvl, H_new, b_new, Hsc_new, bsc_new, refToNew_new, refToNew_aff_new, false); //calculates residual, Hessian and Hessian-block needed for re-substituting depth.
 			Vec3f regEnergy = calcEC(lvl);
 
-			float eTotalNew = (resNew[0]+resNew[1]+regEnergy[1]);
-			float eTotalOld = (resOld[0]+resOld[1]+regEnergy[0]);
+			float eTotalNew = (resNew[0]+resNew[1]+regEnergy[1]); // Calculate new energy
+			float eTotalOld = (resOld[0]+resOld[1]+regEnergy[0]); // Calculate old energy
 
 
-			bool accept = eTotalOld > eTotalNew;
+			bool accept = eTotalOld > eTotalNew; //Accept snap condition if total energy of old frame is greater than that of new frame.
 
 			if(printDebug)
 			{
@@ -210,8 +209,12 @@ bool CoarseInitializer::trackFrame(FrameHessian* newFrameHessian, std::vector<IO
 			if(accept)
 			{
 
-				if(resNew[1] == alphaK*numPoints[lvl])
+				if(resNew[1] == alphaK*numPoints[lvl]) //SNAP CONDITION
+				{
+					std::cout << "resNew[1] is: "<< resNew[1] << std::endl;
+					std::cout << "alphaK*numPoints is: "<< alphaK*numPoints[lvl] << std::endl;
 					snapped = true;
+				}
 				H = H_new;
 				b = b_new;
 				Hsc = Hsc_new;
@@ -768,7 +771,7 @@ void CoarseInitializer::setFirst(	CalibHessian* HCalib, FrameHessian* newFrameHe
 {
 
 	makeK(HCalib); // uses fx fy cx cy from HCalib to make the K matrix for each pyramid level.
-	firstFrame = newFrameHessian;
+	firstFrame = newFrameHessian; // Create firstFrame. This is public.
 
 	PixelSelector sel(w[0],h[0]);  // Construct PixelSelector called sel with w[0] and h[0] as input parameters
 

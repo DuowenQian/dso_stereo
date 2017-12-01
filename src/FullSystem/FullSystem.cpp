@@ -836,10 +836,10 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, cv::Mat &depth_image, 
 		if(coarseInitializer->frameID<0)	// first frame set. fh is kept by coarseInitializer.
 		{
 
-			coarseInitializer->setFirst(&Hcalib, fh); //runs twice.
+			coarseInitializer->setFirst(&Hcalib, fh); // runs once, this is where firstFrame is created.
 		}
-		else if(coarseInitializer->trackFrame(fh, outputWrapper))	// if SNAPPED (activates when there is motion) ONLY RUNS ONCE, then sets initialized to true.
-		{
+		else if(coarseInitializer->trackFrame(fh, outputWrapper))	// trackFrame will constantly check newFrame against firstFrame.
+		{															// Once snapped, it sets initialized to true.
 
 			initializeFromInitializer(fh);
 			lock.unlock();
@@ -939,8 +939,9 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 		if(coarseInitializer->frameID<0)	// first frame set. fh is kept by coarseInitializer.
 		{
 
-			coarseInitializer->setFirst(&Hcalib, fh); //runs twice.
+			coarseInitializer->setFirst(&Hcalib, fh);
 		}
+/*
 		else if(coarseInitializer->trackFrame(fh, outputWrapper))	// if SNAPPED (activates when there is motion) ONLY RUNS ONCE, then sets initialized to true.
 		{
 
@@ -953,6 +954,14 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 			// if still initializing
 			fh->shell->poseValid = false;
 			delete fh;
+		}
+*/
+		else
+		{
+
+			initializeFromInitializer(fh);
+			lock.unlock();
+			deliverTrackedFrame(fh, true); // Deliver the tracked frame for display purposes?
 		}
 		return;
 	}
