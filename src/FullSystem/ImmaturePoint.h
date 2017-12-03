@@ -78,9 +78,11 @@ public:
 
 	float idepth_min;
 	float idepth_max;
+	float idepth_rgbd;
 	ImmaturePoint(int u_, int v_, FrameHessian* host_, float type, CalibHessian* HCalib);
 	~ImmaturePoint();
 
+	ImmaturePointStatus getRgbdDepth(FrameHessian* frame);
 	ImmaturePointStatus traceOn(FrameHessian* frame, const Mat33f &hostToFrame_KRKi, const Vec3f &hostToFrame_Kt, const Vec2f &hostToFrame_affine, CalibHessian* HCalib, bool debugPrint=false);
 
 	ImmaturePointStatus lastTraceStatus;

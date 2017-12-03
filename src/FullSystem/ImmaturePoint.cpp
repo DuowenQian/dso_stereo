@@ -64,7 +64,11 @@ ImmaturePoint::~ImmaturePoint()
 {
 }
 
-
+ImmaturePointStatus ImmaturePoint::getRgbdDepth(FrameHessian* frame)
+{
+	idepth_rgbd = 1; //something
+	return lastTraceStatus = ImmaturePointStatus::IPS_GOOD;
+}
 
 /*
  * returns

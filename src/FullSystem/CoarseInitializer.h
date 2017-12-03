@@ -30,7 +30,7 @@
 #include "util/settings.h"
 #include "vector"
 #include <math.h>
-
+#include <opencv2/core/core.hpp> //include openCV
 
 
 
@@ -84,6 +84,7 @@ public:
 
 
 	void setFirst(	CalibHessian* HCalib, FrameHessian* newFrameHessian);
+	void setFirstRgbd(	CalibHessian* HCalib, FrameHessian* newFrameHessian, cv::Mat &imDepth);
 	bool trackFrame(FrameHessian* newFrameHessian, std::vector<IOWrap::Output3DWrapper*> &wraps);
 	void calcTGrads(FrameHessian* newFrameHessian);
 
@@ -91,7 +92,7 @@ public:
 	bool fixAffine;
 	bool printDebug;
 
-	Pnt* points[PYR_LEVELS];
+	Pnt* points[PYR_LEVELS]; // "points" is an array of type Pnt* with PYR_LEVELS elements
 	int numPoints[PYR_LEVELS];
 	AffLight thisToNext_aff;
 	SE3 thisToNext;
@@ -113,6 +114,7 @@ private:
 	int w[PYR_LEVELS];
 	int h[PYR_LEVELS];
 	void makeK(CalibHessian* HCalib);
+	float* idepth[PYR_LEVELS];
 
 	bool snapped;
 	int snappedAt;

@@ -54,8 +54,8 @@ public:
 			int coarsestLvl, Vec5 minResForAbort,
 			IOWrap::Output3DWrapper* wrap=0);
 
-	void setCoarseTrackingRef(
-			std::vector<FrameHessian*> frameHessians);
+	void setCTRefForFirstFrame(std::vector<FrameHessian*> frameHessians);
+	void setCoarseTrackingRef(std::vector<FrameHessian*> frameHessians);
 
 	void makeK(
 			CalibHessian* HCalib);
@@ -91,6 +91,8 @@ private:
 
 
 	void makeCoarseDepthL0(std::vector<FrameHessian*> frameHessians);
+	void makeCoarseDepthForFirstFrame(FrameHessian* fh);
+
 	float* idepth[PYR_LEVELS];
 	float* weightSums[PYR_LEVELS];
 	float* weightSums_bak[PYR_LEVELS];

@@ -35,8 +35,9 @@
 #include "FullSystem/Residuals.h"
 #include "FullSystem/PixelSelector.h"
 #include "FullSystem/PixelSelector2.h"
+#include "FullSystem/ImmaturePoint.h"
 #include "util/nanoflann.h"
-
+#include <opencv2/core/core.hpp> //include openCV
 
 #if !defined(__SSE3__) && !defined(__SSE2__) && !defined(__SSE1__)
 #include "SSE2NEON.h"
@@ -49,6 +50,9 @@ CoarseInitializer::CoarseInitializer(int ww, int hh) : thisToNext_aff(0,0), this
 {
 	for(int lvl=0; lvl<pyrLevelsUsed; lvl++)
 	{
+		int wl = ww>>lvl;
+		int hl = hh>>lvl;
+		idepth[lvl] = new float[wl*hl];
 		points[lvl] = 0;
 		numPoints[lvl] = 0;
 	}
@@ -71,6 +75,7 @@ CoarseInitializer::~CoarseInitializer()
 	for(int lvl=0; lvl<pyrLevelsUsed; lvl++)
 	{
 		if(points[lvl] != 0) delete[] points[lvl];
+		delete[] idepth[lvl];
 	}
 
 	delete[] JbBuffer;
@@ -767,7 +772,7 @@ void CoarseInitializer::makeGradients(Eigen::Vector3f** data)
 		}
 	}
 }
-void CoarseInitializer::setFirst(	CalibHessian* HCalib, FrameHessian* newFrameHessian)
+void CoarseInitializer::setFirstRgbd(	CalibHessian* HCalib, FrameHessian* newFrameHessian, cv::Mat &imDepth)
 {
 
 	makeK(HCalib); // uses fx fy cx cy from HCalib to make the K matrix for each pyramid level.
@@ -779,12 +784,13 @@ void CoarseInitializer::setFirst(	CalibHessian* HCalib, FrameHessian* newFrameHe
 	bool* statusMapB = new bool[w[0]*h[0]];
 
 	float densities[] = {0.03,0.05,0.15,0.5,1};
+
 	for(int lvl=0; lvl<pyrLevelsUsed; lvl++) // for each pyramid level
 	{
 		sel.currentPotential = 3;
 		int npts;
 		if(lvl == 0)
-			npts = sel.makeMaps(firstFrame, statusMap,densities[lvl]*w[0]*h[0],1,false,2); //Not sure what this does
+			npts = sel.makeMaps(firstFrame, statusMap,densities[lvl]*w[0]*h[0],1,false,2); //get number of points to be evaluated
 		else
 			npts = makePixelStatus(firstFrame->dIp[lvl], statusMapB, w[lvl], h[lvl], densities[lvl]*w[0]*h[0]);
 		// npts = number of points to be evaluated?
@@ -792,6 +798,147 @@ void CoarseInitializer::setFirst(	CalibHessian* HCalib, FrameHessian* newFrameHe
 
 		if(points[lvl] != 0) delete[] points[lvl];
 		points[lvl] = new Pnt[npts];  // initialize npts points
+
+		// set idepth map with static rgb-D depth info. If no idepth is available, set to 0,01.
+		int wl = w[lvl], hl = h[lvl];
+		Pnt* pl = points[lvl]; // declare an array called pl of type Pnt* with lvl elements
+		int nl = 0;
+		for(int y=patternPadding+1;y<hl-patternPadding-2;y++) // for each pixel in image
+		for(int x=patternPadding+1;x<wl-patternPadding-2;x++)
+		{
+			if(lvl==0 && statusMap[x+y*wl] != 0) //if first pyr level and the pixel is a selected pixel according to statusMap,
+			{
+				const float d = imDepth.at<float>(y,x);
+
+				ImmaturePoint* pt = new ImmaturePoint(x, y, firstFrame, statusMap[x+y*wl], HCalib);
+				ImmaturePointStatus stat = pt->getRgbdDepth(firstFrame);
+
+				if(stat==ImmaturePointStatus::IPS_GOOD)
+				{
+					pl[nl].u = x;
+					pl[nl].v = y;
+					pl[nl].idepth = pt->idepth_rgbd;  //set idepth map to initially 1 everywhere
+					pl[nl].iR = pt->idepth_rgbd;
+					pl[nl].isGood=true;
+					pl[nl].energy.setZero();
+					pl[nl].lastHessian=0;
+					pl[nl].lastHessian_new=0;
+					pl[nl].my_type= (lvl!=0) ? 1 : statusMap[x+y*wl];
+
+					Eigen::Vector3f* cpt = firstFrame->dIp[lvl] + x + y*w[lvl];
+					float sumGrad2=0;
+					for(int idx=0;idx<patternNum;idx++)
+					{
+						int dx = patternP[idx][0];
+						int dy = patternP[idx][1];
+						float absgrad = cpt[dx + dy*w[lvl]].tail<2>().squaredNorm();
+						sumGrad2 += absgrad;
+					}
+
+					pl[nl].outlierTH = patternNum*setting_outlierTH;
+
+					nl++;
+					assert(nl <= npts);
+				}
+				else
+				{
+					pl[nl].u = x;
+					pl[nl].v = y;
+					pl[nl].idepth = 0.01;  //set idepth map to initially 1 everywhere
+					pl[nl].iR = 0.01;
+					pl[nl].isGood=true;
+					pl[nl].energy.setZero();
+					pl[nl].lastHessian=0;
+					pl[nl].lastHessian_new=0;
+					pl[nl].my_type= (lvl!=0) ? 1 : statusMap[x+y*wl];
+
+					Eigen::Vector3f* cpt = firstFrame->dIp[lvl] + x + y*w[lvl];
+					float sumGrad2=0;
+					for(int idx=0;idx<patternNum;idx++)
+					{
+						int dx = patternP[idx][0];
+						int dy = patternP[idx][1];
+						float absgrad = cpt[dx + dy*w[lvl]].tail<2>().squaredNorm();
+						sumGrad2 += absgrad;
+					}
+
+					pl[nl].outlierTH = patternNum*setting_outlierTH;
+
+					nl++;
+					assert(nl <= npts);
+				}
+			}
+
+			if(lvl!=0 && statusMapB[x+y*wl]) //if other pyramid levels and the pixel is a selected pixel according to statusMapB,
+			{
+				pl[nl].u = x+0.1;
+				pl[nl].v = y+0.1;
+				pl[nl].idepth = 1;
+				pl[nl].iR = 1;
+				pl[nl].isGood=true;
+				pl[nl].energy.setZero();
+				pl[nl].lastHessian=0;
+				pl[nl].lastHessian_new=0;
+				pl[nl].my_type= (lvl!=0) ? 1 : statusMap[x+y*wl];
+
+				Eigen::Vector3f* cpt = firstFrame->dIp[lvl] + x + y*w[lvl];
+				float sumGrad2=0;
+				for(int idx=0;idx<patternNum;idx++)
+				{
+					int dx = patternP[idx][0];
+					int dy = patternP[idx][1];
+					float absgrad = cpt[dx + dy*w[lvl]].tail<2>().squaredNorm();
+					sumGrad2 += absgrad;
+				}
+
+				pl[nl].outlierTH = patternNum*setting_outlierTH;
+
+				nl++;
+				assert(nl <= npts);
+			}
+		}
+
+
+		numPoints[lvl]=nl;
+	}
+	delete[] statusMap;
+	delete[] statusMapB;
+
+	makeNN();
+
+	thisToNext=SE3();
+	snapped = false;
+	frameID = snappedAt = 0;
+
+	for(int i=0;i<pyrLevelsUsed;i++)
+		dGrads[i].setZero();
+
+}
+
+void CoarseInitializer::setFirst(	CalibHessian* HCalib, FrameHessian* newFrameHessian)
+{
+
+	makeK(HCalib); // uses fx fy cx cy from HCalib to make the K matrix for each pyramid level.
+	firstFrame = newFrameHessian;
+
+	PixelSelector sel(w[0],h[0]);  // Construct PixelSelector called sel with w[0] and h[0] as input parameters
+
+	float* statusMap = new float[w[0]*h[0]];
+	bool* statusMapB = new bool[w[0]*h[0]]; // create a bool for each pixel.
+
+	float densities[] = {0.03,0.05,0.15,0.5,1};
+	for(int lvl=0; lvl<pyrLevelsUsed; lvl++) // for each pyramid level
+	{
+		sel.currentPotential = 3;
+		int npts;
+		if(lvl == 0)
+			npts = sel.makeMaps(firstFrame, statusMap,densities[lvl]*w[0]*h[0],1,false,2);
+		else
+			npts = makePixelStatus(firstFrame->dIp[lvl], statusMapB, w[lvl], h[lvl], densities[lvl]*w[0]*h[0]); // Calculate number of pts of interest in each pyr lvl.
+		// npts = number of points to be evaluated?
+
+		if(points[lvl] != 0) delete[] points[lvl];
+		points[lvl] = new Pnt[npts];  // initialize an array of npts points for each pyr lvl. These are the selected pixels.
 
 		// set idepth map to initially 1 everywhere.
 		int wl = w[lvl], hl = h[lvl];
@@ -801,12 +948,12 @@ void CoarseInitializer::setFirst(	CalibHessian* HCalib, FrameHessian* newFrameHe
 		for(int x=patternPadding+1;x<wl-patternPadding-2;x++)
 		{
 			//if(x==2) printf("y=%d!\n",y);
-			if((lvl!=0 && statusMapB[x+y*wl]) || (lvl==0 && statusMap[x+y*wl] != 0)) //if not first pyramid scale and
+			if((lvl!=0 && statusMapB[x+y*wl]) || (lvl==0 && statusMap[x+y*wl] != 0)) //if pixel is a selected pixel.
 			{
 				//assert(patternNum==9);
-				pl[nl].u = x+0.1;
+				pl[nl].u = x+0.1;  // set coords/index
 				pl[nl].v = y+0.1;
-				pl[nl].idepth = 1;  //set idepth map to initially 1 everywhere
+				pl[nl].idepth = 1;  //set idepth map to initially 1 everywhere. REPLACE THIS WITH RGB-D DATA: pl[nl].idepth = depth_image.data[x,y]
 				pl[nl].iR = 1;
 				pl[nl].isGood=true;
 				pl[nl].energy.setZero();

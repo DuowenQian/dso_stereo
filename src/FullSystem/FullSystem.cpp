@@ -285,7 +285,46 @@ Vec4 FullSystem::trackNewCoarse(FrameHessian* fh)
 
 	std::vector<SE3,Eigen::aligned_allocator<SE3>> lastF_2_fh_tries;
 	if(allFrameHistory.size() == 2)
-		for(unsigned int i=0;i<lastF_2_fh_tries.size();i++) lastF_2_fh_tries.push_back(SE3());
+	{
+		initializeFromInitializer(fh); // INITIALIZE
+
+		lastF_2_fh_tries.push_back(SE3(Eigen::Matrix<double, 3, 3>::Identity(), Eigen::Matrix<double,3,1>::Zero() ));
+
+        for(float rotDelta=0.02; rotDelta < 0.05; rotDelta = rotDelta + 0.02)
+        {
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,0,0), Vec3(0,0,0)));			// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,rotDelta,0), Vec3(0,0,0)));			// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,0,rotDelta), Vec3(0,0,0)));			// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,-rotDelta,0,0), Vec3(0,0,0)));			// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,-rotDelta,0), Vec3(0,0,0)));			// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,0,-rotDelta), Vec3(0,0,0)));			// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,rotDelta,0), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,0,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,-rotDelta,rotDelta,0), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,-rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,-rotDelta,0,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,-rotDelta,0), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,0,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,-rotDelta,-rotDelta,0), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,-rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,-rotDelta,0,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,-rotDelta,-rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,-rotDelta,-rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,-rotDelta,rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,-rotDelta,rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,-rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,-rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+            lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+        }
+
+		coarseTracker->makeK(&Hcalib);
+        coarseTracker->setCTRefForFirstFrame(frameHessians);
+
+        lastF = coarseTracker->lastRef;
+	}
 	else
 	{
 		FrameShell* slast = allFrameHistory[allFrameHistory.size()-2];
@@ -312,7 +351,7 @@ Vec4 FullSystem::trackNewCoarse(FrameHessian* fh)
 		// just try a TON of different initializations (all rotations). In the end,
 		// if they don't work they will only be tried on the coarsest level, which is super fast anyway.
 		// also, if tracking rails here we loose, so we really, really want to avoid that.
-		for(float rotDelta=0.02; rotDelta < 0.05; rotDelta++)
+		for(float rotDelta=0.02; rotDelta < 0.02; rotDelta++)
 		{
 			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,0,0), Vec3(0,0,0)));			// assume constant motion.
 			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,0,rotDelta,0), Vec3(0,0,0)));			// assume constant motion.
@@ -836,20 +875,8 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, cv::Mat &depth_image, 
 		if(coarseInitializer->frameID<0)	// first frame set. fh is kept by coarseInitializer.
 		{
 
-			coarseInitializer->setFirst(&Hcalib, fh); // runs once, this is where firstFrame is created.
-		}
-		else if(coarseInitializer->trackFrame(fh, outputWrapper))	// trackFrame will constantly check newFrame against firstFrame.
-		{															// Once snapped, it sets initialized to true.
-
-			initializeFromInitializer(fh);
-			lock.unlock();
-			deliverTrackedFrame(fh, true); // Deliver the tracked frame for display purposes?
-		}
-		else
-		{
-			// if still initializing
-			fh->shell->poseValid = false;
-			delete fh;
+			coarseInitializer->setFirstRgbd(&Hcalib, fh, imDepth); // runs once, this is where firstFrame is created.
+			initialized = true;
 		}
 		return;
 	}
@@ -859,7 +886,9 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, cv::Mat &depth_image, 
 		if(coarseTracker_forNewKF->refFrameID > coarseTracker->refFrameID) // if a new KeyFrame was made
 		{
 			boost::unique_lock<boost::mutex> crlock(coarseTrackerSwapMutex); // lock
-			CoarseTracker* tmp = coarseTracker; coarseTracker=coarseTracker_forNewKF; coarseTracker_forNewKF=tmp; //swap reference
+			CoarseTracker* tmp = coarseTracker;
+			coarseTracker=coarseTracker_forNewKF;
+			coarseTracker_forNewKF=tmp; //swap reference
 		}
 
 
@@ -941,7 +970,6 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 
 			coarseInitializer->setFirst(&Hcalib, fh);
 		}
-/*
 		else if(coarseInitializer->trackFrame(fh, outputWrapper))	// if SNAPPED (activates when there is motion) ONLY RUNS ONCE, then sets initialized to true.
 		{
 
@@ -954,14 +982,6 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 			// if still initializing
 			fh->shell->poseValid = false;
 			delete fh;
-		}
-*/
-		else
-		{
-
-			initializeFromInitializer(fh);
-			lock.unlock();
-			deliverTrackedFrame(fh, true); // Deliver the tracked frame for display purposes?
 		}
 		return;
 	}
@@ -1334,6 +1354,7 @@ void FullSystem::initializeFromInitializer(FrameHessian* newFrame)
 	firstFrame->pointHessiansMarginalized.reserve(wG[0]*hG[0]*0.2f);
 	firstFrame->pointHessiansOut.reserve(wG[0]*hG[0]*0.2f);
 
+	float idepthRGBD = 0;
 
 	float sumID=1e-5, numID=1e-5;
 	for(int i=0;i<coarseInitializer->numPoints[0];i++)
@@ -1350,6 +1371,7 @@ void FullSystem::initializeFromInitializer(FrameHessian* newFrame)
         printf("Initialization: keep %.1f%% (need %d, have %d)!\n", 100*keepPercentage,
                 (int)(setting_desiredPointDensity), coarseInitializer->numPoints[0] );
 
+    //initialize first frame with idepth from rgbd
 	for(int i=0;i<coarseInitializer->numPoints[0];i++)
 	{
 		if(rand()/(float)RAND_MAX > keepPercentage) continue;
@@ -1357,16 +1379,22 @@ void FullSystem::initializeFromInitializer(FrameHessian* newFrame)
 		Pnt* point = coarseInitializer->points[0]+i;
 		ImmaturePoint* pt = new ImmaturePoint(point->u+0.5f,point->v+0.5f,firstFrame,point->my_type, &Hcalib);
 
+        pt->idepth_rgbd = 1/*rgbd input*/; //MODIFY THIS LINE
+        idepthRGBD = pt->idepth_rgbd;
+
 		if(!std::isfinite(pt->energyTH)) { delete pt; continue; }
 
 
-		pt->idepth_max=pt->idepth_min=1;
+//-		pt->idepth_max=pt->idepth_min=1;
 		PointHessian* ph = new PointHessian(pt, &Hcalib);
 		delete pt;
 		if(!std::isfinite(ph->energyTH)) {delete ph; continue;}
 
-		ph->setIdepthScaled(point->iR*rescaleFactor);
-		ph->setIdepthZero(ph->idepth);
+//-		ph->setIdepthScaled(point->iR*rescaleFactor);
+//-		ph->setIdepthZero(ph->idepth);
+		ph->setIdepthScaled(idepthRGBD);
+		ph->setIdepthZero(idepthRGBD);
+
 		ph->hasDepthPrior=true;
 		ph->setPointStatus(PointHessian::ACTIVE);
 
@@ -1377,7 +1405,7 @@ void FullSystem::initializeFromInitializer(FrameHessian* newFrame)
 
 
 	SE3 firstToNew = coarseInitializer->thisToNext;
-	firstToNew.translation() /= rescaleFactor;
+//-	firstToNew.translation() /= rescaleFactor;
 
 
 	// really no lock required, as we are initializing.
