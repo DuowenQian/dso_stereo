@@ -53,8 +53,17 @@
 #include "IOWrapper/Output3DWrapper.h"
 
 #include "util/ImageAndExposure.h"
-#include <opencv2/core/core.hpp> //include openCV
+
 #include <cmath>
+
+#include <opencv2/core/core.hpp> //include openCV
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <fstream>
+
+using namespace cv;
+using namespace std;
 
 namespace dso
 {
@@ -268,7 +277,7 @@ void FullSystem::printResult(std::string file)
 }
 
 
-Vec4 FullSystem::trackNewCoarse(FrameHessian* fh)
+Vec4 FullSystem::trackNewCoarse(FrameHessian* fh, cv::Mat &imDepth)
 {
 
 	assert(allFrameHistory.size() > 0);
@@ -286,7 +295,7 @@ Vec4 FullSystem::trackNewCoarse(FrameHessian* fh)
 	std::vector<SE3,Eigen::aligned_allocator<SE3>> lastF_2_fh_tries;
 	if(allFrameHistory.size() == 2)
 	{
-		initializeFromInitializer(fh); // INITIALIZE
+		initializeFromInitializer(fh, imDepth); // INITIALIZE
 
 		lastF_2_fh_tries.push_back(SE3(Eigen::Matrix<double, 3, 3>::Identity(), Eigen::Matrix<double,3,1>::Zero() ));
 
@@ -498,6 +507,199 @@ Vec4 FullSystem::trackNewCoarse(FrameHessian* fh)
 
 	return Vec4(achievedRes[0], flowVecs[0], flowVecs[1], flowVecs[2]);
 }
+
+Vec4 FullSystem::trackNewCoarse(FrameHessian* fh)
+{
+
+	assert(allFrameHistory.size() > 0);
+	// set pose initialization.
+
+    for(IOWrap::Output3DWrapper* ow : outputWrapper)
+        ow->pushLiveFrame(fh);
+
+
+
+	FrameHessian* lastF = coarseTracker->lastRef;
+
+	AffLight aff_last_2_l = AffLight(0,0);
+
+	std::vector<SE3,Eigen::aligned_allocator<SE3>> lastF_2_fh_tries;
+	if(allFrameHistory.size() == 2)
+		for(unsigned int i=0;i<lastF_2_fh_tries.size();i++) lastF_2_fh_tries.push_back(SE3());
+	else
+	{
+		FrameShell* slast = allFrameHistory[allFrameHistory.size()-2];
+		FrameShell* sprelast = allFrameHistory[allFrameHistory.size()-3];
+		SE3 slast_2_sprelast;
+		SE3 lastF_2_slast;
+		{	// lock on global pose consistency!
+			boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
+			slast_2_sprelast = sprelast->camToWorld.inverse() * slast->camToWorld;
+			lastF_2_slast = slast->camToWorld.inverse() * lastF->shell->camToWorld;
+			aff_last_2_l = slast->aff_g2l;
+		}
+		SE3 fh_2_slast = slast_2_sprelast;// assumed to be the same as fh_2_slast.
+
+
+		// get last delta-movement.
+		lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast);	// assume constant motion.
+		lastF_2_fh_tries.push_back(fh_2_slast.inverse() * fh_2_slast.inverse() * lastF_2_slast);	// assume double motion (frame skipped)
+		lastF_2_fh_tries.push_back(SE3::exp(fh_2_slast.log()*0.5).inverse() * lastF_2_slast); // assume half motion.
+		lastF_2_fh_tries.push_back(lastF_2_slast); // assume zero motion.
+		lastF_2_fh_tries.push_back(SE3()); // assume zero motion FROM KF.
+
+
+		// just try a TON of different initializations (all rotations). In the end,
+		// if they don't work they will only be tried on the coarsest level, which is super fast anyway.
+		// also, if tracking rails here we loose, so we really, really want to avoid that.
+		for(float rotDelta=0.02; rotDelta < 0.05; rotDelta++)
+		{
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,0,0), Vec3(0,0,0)));			// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,0,rotDelta,0), Vec3(0,0,0)));			// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,0,0,rotDelta), Vec3(0,0,0)));			// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,-rotDelta,0,0), Vec3(0,0,0)));			// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,0,-rotDelta,0), Vec3(0,0,0)));			// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,0,0,-rotDelta), Vec3(0,0,0)));			// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,rotDelta,0), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,0,rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,0,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,-rotDelta,rotDelta,0), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,0,-rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,-rotDelta,0,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,-rotDelta,0), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,0,rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,0,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,-rotDelta,-rotDelta,0), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,0,-rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,-rotDelta,0,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,-rotDelta,-rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,-rotDelta,-rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,-rotDelta,rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,-rotDelta,rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,-rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,-rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,rotDelta,-rotDelta), Vec3(0,0,0)));	// assume constant motion.
+			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1,rotDelta,rotDelta,rotDelta), Vec3(0,0,0)));	// assume constant motion.
+		}
+
+		if(!slast->poseValid || !sprelast->poseValid || !lastF->shell->poseValid)
+		{
+			lastF_2_fh_tries.clear();
+			lastF_2_fh_tries.push_back(SE3());
+		}
+	}
+
+
+	Vec3 flowVecs = Vec3(100,100,100);
+	SE3 lastF_2_fh = SE3();
+	AffLight aff_g2l = AffLight(0,0);
+
+
+	// as long as maxResForImmediateAccept is not reached, I'll continue through the options.
+	// I'll keep track of the so-far best achieved residual for each level in achievedRes.
+	// If on a coarse level, tracking is WORSE than achievedRes, we will not continue to save time.
+
+
+	Vec5 achievedRes = Vec5::Constant(NAN);
+	bool haveOneGood = false;
+	int tryIterations=0;
+	for(unsigned int i=0;i<lastF_2_fh_tries.size();i++)
+	{
+		AffLight aff_g2l_this = aff_last_2_l;
+		SE3 lastF_2_fh_this = lastF_2_fh_tries[i];
+		bool trackingIsGood = coarseTracker->trackNewestCoarse(
+				fh, lastF_2_fh_this, aff_g2l_this,
+				pyrLevelsUsed-1,
+				achievedRes);	// in each level has to be at least as good as the last try.
+		tryIterations++;
+
+		if(i != 0)
+		{
+			printf("RE-TRACK ATTEMPT %d with initOption %d and start-lvl %d (ab %f %f): %f %f %f %f %f -> %f %f %f %f %f \n",
+					i,
+					i, pyrLevelsUsed-1,
+					aff_g2l_this.a,aff_g2l_this.b,
+					achievedRes[0],
+					achievedRes[1],
+					achievedRes[2],
+					achievedRes[3],
+					achievedRes[4],
+					coarseTracker->lastResiduals[0],
+					coarseTracker->lastResiduals[1],
+					coarseTracker->lastResiduals[2],
+					coarseTracker->lastResiduals[3],
+					coarseTracker->lastResiduals[4]);
+		}
+
+
+		// do we have a new winner?
+		if(trackingIsGood && std::isfinite((float)coarseTracker->lastResiduals[0]) && !(coarseTracker->lastResiduals[0] >=  achievedRes[0]))
+		{
+			//printf("take over. minRes %f -> %f!\n", achievedRes[0], coarseTracker->lastResiduals[0]);
+			flowVecs = coarseTracker->lastFlowIndicators;
+			aff_g2l = aff_g2l_this;
+			lastF_2_fh = lastF_2_fh_this;
+			haveOneGood = true;
+		}
+
+		// take over achieved res (always).
+		if(haveOneGood)
+		{
+			for(int i=0;i<5;i++)
+			{
+				if(!std::isfinite((float)achievedRes[i]) || achievedRes[i] > coarseTracker->lastResiduals[i])	// take over if achievedRes is either bigger or NAN.
+					achievedRes[i] = coarseTracker->lastResiduals[i];
+			}
+		}
+
+
+        if(haveOneGood &&  achievedRes[0] < lastCoarseRMSE[0]*setting_reTrackThreshold)
+            break;
+
+	}
+
+	if(!haveOneGood)
+	{
+        printf("BIG ERROR! tracking failed entirely. Take predictred pose and hope we may somehow recover.\n");
+		flowVecs = Vec3(0,0,0);
+		aff_g2l = aff_last_2_l;
+		lastF_2_fh = lastF_2_fh_tries[0];
+	}
+
+	lastCoarseRMSE = achievedRes;
+
+	// no lock required, as fh is not used anywhere yet.
+	fh->shell->camToTrackingRef = lastF_2_fh.inverse();
+	fh->shell->trackingRef = lastF->shell;
+	fh->shell->aff_g2l = aff_g2l;
+	fh->shell->camToWorld = fh->shell->trackingRef->camToWorld * fh->shell->camToTrackingRef;
+
+
+	if(coarseTracker->firstCoarseRMSE < 0)
+		coarseTracker->firstCoarseRMSE = achievedRes[0];
+
+    if(!setting_debugout_runquiet)
+        printf("Coarse Tracker tracked ab = %f %f (exp %f). Res %f!\n", aff_g2l.a, aff_g2l.b, fh->ab_exposure, achievedRes[0]);
+
+
+
+	if(setting_logStuff)
+	{
+		(*coarseTrackingLog) << std::setprecision(16)
+						<< fh->shell->id << " "
+						<< fh->shell->timestamp << " "
+						<< fh->ab_exposure << " "
+						<< fh->shell->camToWorld.log().transpose() << " "
+						<< aff_g2l.a << " "
+						<< aff_g2l.b << " "
+						<< achievedRes[0] << " "
+						<< tryIterations << "\n";
+	}
+
+
+	return Vec4(achievedRes[0], flowVecs[0], flowVecs[1], flowVecs[2]);
+}
+
 
 void FullSystem::traceNewCoarse(FrameHessian* fh)
 {
@@ -841,10 +1043,24 @@ void FullSystem::flagPointsForRemoval()
 void FullSystem::addActiveFrame( ImageAndExposure* image, cv::Mat &depth_image, int id )
 {
 	// TEST
-	float mDepthMapFactor = 1000;
+	float mDepthMapFactor = 1.0f/1000;
 	cv::Mat imDepth = depth_image;
+
     if((fabs(mDepthMapFactor-1.0f)>1e-5) || imDepth.type()!=CV_32F)
         imDepth.convertTo(imDepth,CV_32F,mDepthMapFactor);
+/*
+	double min;
+	double max;
+	cv::minMaxIdx(imDepth, &min, &max);
+	cv::Mat adjMap;
+	cv::convertScaleAbs(imDepth, adjMap, 255 / max);
+	namedWindow( "Display window", WINDOW_AUTOSIZE );
+    imshow("Display window",adjMap);
+    waitKey(0);
+
+	cv::FileStorage file_2("/home/duo/data_2.yml", cv::FileStorage::WRITE);
+	file_2 << "image depth" << imDepth;
+*/
 
     if(isLost) return;
 	boost::unique_lock<boost::mutex> lock(trackMutex);
@@ -870,7 +1086,7 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, cv::Mat &depth_image, 
 
 
 	if(!initialized)
-	{
+	{										// coarseInitializer is an object of fullSystem. It is constructed when fullSystem is constructed.
 		// use initializer! 				// NOTE: coarseInitializer->frameID is initialized with value of -1.
 		if(coarseInitializer->frameID<0)	// first frame set. fh is kept by coarseInitializer.
 		{
@@ -892,7 +1108,7 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, cv::Mat &depth_image, 
 		}
 
 
-		Vec4 tres = trackNewCoarse(fh); // WHERE THE MAGIC HAPPENS. Track motion of new frame.
+		Vec4 tres = trackNewCoarse(fh, imDepth); // WHERE THE MAGIC HAPPENS. Track motion of new frame.
 		if(!std::isfinite((double)tres[0]) || !std::isfinite((double)tres[1]) || !std::isfinite((double)tres[2]) || !std::isfinite((double)tres[3]))
         {
             printf("Initial Tracking failed: LOST!\n");
@@ -1334,7 +1550,7 @@ void FullSystem::makeKeyFrame( FrameHessian* fh)
 }
 
 
-void FullSystem::initializeFromInitializer(FrameHessian* newFrame)
+void FullSystem::initializeFromInitializer(FrameHessian* newFrame, cv::Mat &imDepth)
 {
 	boost::unique_lock<boost::mutex> lock(mapMutex);
 
@@ -1371,7 +1587,7 @@ void FullSystem::initializeFromInitializer(FrameHessian* newFrame)
         printf("Initialization: keep %.1f%% (need %d, have %d)!\n", 100*keepPercentage,
                 (int)(setting_desiredPointDensity), coarseInitializer->numPoints[0] );
 
-    //initialize first frame with idepth from rgbd
+    //initialize first frame with idepth from static rgbd
 	for(int i=0;i<coarseInitializer->numPoints[0];i++)
 	{
 		if(rand()/(float)RAND_MAX > keepPercentage) continue;
@@ -1379,14 +1595,20 @@ void FullSystem::initializeFromInitializer(FrameHessian* newFrame)
 		Pnt* point = coarseInitializer->points[0]+i;
 		ImmaturePoint* pt = new ImmaturePoint(point->u+0.5f,point->v+0.5f,firstFrame,point->my_type, &Hcalib);
 
-        pt->idepth_rgbd = 1/*rgbd input*/; //MODIFY THIS LINE
+		pt->getPixelDepth(firstFrame, imDepth);
+
         idepthRGBD = pt->idepth_rgbd;
 
-		if(!std::isfinite(pt->energyTH)) { delete pt; continue; }
+		if(!std::isfinite(pt->energyTH) || !std::isfinite(pt->idepth_min) || !std::isfinite(pt->idepth_max)
+        || pt->idepth_min < 0 || pt->idepth_max < 0)
+		{
+			delete pt;
+			continue;
+		}
 
 
 //-		pt->idepth_max=pt->idepth_min=1;
-		PointHessian* ph = new PointHessian(pt, &Hcalib);
+		PointHessian* ph = new PointHessian(pt, &Hcalib); //create a PointHessian ph object with ImmaturePoint pt
 		delete pt;
 		if(!std::isfinite(ph->energyTH)) {delete ph; continue;}
 
@@ -1406,6 +1628,93 @@ void FullSystem::initializeFromInitializer(FrameHessian* newFrame)
 
 	SE3 firstToNew = coarseInitializer->thisToNext;
 //-	firstToNew.translation() /= rescaleFactor;
+
+
+	// really no lock required, as we are initializing.
+	{
+		boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
+		firstFrame->shell->camToWorld = SE3();
+		firstFrame->shell->aff_g2l = AffLight(0,0);
+		firstFrame->setEvalPT_scaled(firstFrame->shell->camToWorld.inverse(),firstFrame->shell->aff_g2l);
+		firstFrame->shell->trackingRef=0;
+		firstFrame->shell->camToTrackingRef = SE3();
+
+		newFrame->shell->camToWorld = firstToNew.inverse();
+		newFrame->shell->aff_g2l = AffLight(0,0);
+		newFrame->setEvalPT_scaled(newFrame->shell->camToWorld.inverse(),newFrame->shell->aff_g2l);
+		newFrame->shell->trackingRef = firstFrame->shell;
+		newFrame->shell->camToTrackingRef = firstToNew.inverse();
+
+	}
+
+	initialized=true;
+	printf("INITIALIZE FROM INITIALIZER (%d pts)!\n", (int)firstFrame->pointHessians.size());
+}
+
+void FullSystem::initializeFromInitializer(FrameHessian* newFrame)
+{
+	boost::unique_lock<boost::mutex> lock(mapMutex);
+
+	// add firstframe.
+	FrameHessian* firstFrame = coarseInitializer->firstFrame;
+	firstFrame->idx = frameHessians.size();
+	frameHessians.push_back(firstFrame);
+	firstFrame->frameID = allKeyFramesHistory.size();
+	allKeyFramesHistory.push_back(firstFrame->shell);
+	ef->insertFrame(firstFrame, &Hcalib); // add firstFrame to error functional
+	setPrecalcValues();
+
+	//int numPointsTotal = makePixelStatus(firstFrame->dI, selectionMap, wG[0], hG[0], setting_desiredDensity);
+	//int numPointsTotal = pixelSelector->makeMaps(firstFrame->dIp, selectionMap,setting_desiredDensity);
+
+	firstFrame->pointHessians.reserve(wG[0]*hG[0]*0.2f); // reserve size for these vectors.
+	firstFrame->pointHessiansMarginalized.reserve(wG[0]*hG[0]*0.2f);
+	firstFrame->pointHessiansOut.reserve(wG[0]*hG[0]*0.2f);
+
+
+	float sumID=1e-5, numID=1e-5;
+	for(int i=0;i<coarseInitializer->numPoints[0];i++)
+	{
+		sumID += coarseInitializer->points[0][i].iR;
+		numID++;
+	}
+	float rescaleFactor = 1 / (sumID / numID); // what is rescaleFactor???
+
+	// randomly sub-select the points I need.
+	float keepPercentage = setting_desiredPointDensity / coarseInitializer->numPoints[0];
+
+    if(!setting_debugout_runquiet)
+        printf("Initialization: keep %.1f%% (need %d, have %d)!\n", 100*keepPercentage,
+                (int)(setting_desiredPointDensity), coarseInitializer->numPoints[0] );
+
+	for(int i=0;i<coarseInitializer->numPoints[0];i++)
+	{
+		if(rand()/(float)RAND_MAX > keepPercentage) continue;
+
+		Pnt* point = coarseInitializer->points[0]+i;
+		ImmaturePoint* pt = new ImmaturePoint(point->u+0.5f,point->v+0.5f,firstFrame,point->my_type, &Hcalib);
+
+		if(!std::isfinite(pt->energyTH)) { delete pt; continue; }
+
+
+		pt->idepth_max=pt->idepth_min=1; // NEED TO LOOK INTO THIS
+		PointHessian* ph = new PointHessian(pt, &Hcalib);
+		delete pt;
+		if(!std::isfinite(ph->energyTH)) {delete ph; continue;}
+
+		ph->setIdepthScaled(point->iR*rescaleFactor);
+		ph->setIdepthZero(ph->idepth);
+		ph->hasDepthPrior=true;
+		ph->setPointStatus(PointHessian::ACTIVE);
+
+		firstFrame->pointHessians.push_back(ph);
+		ef->insertPoint(ph);
+	}
+
+
+
+	SE3 firstToNew = coarseInitializer->thisToNext;
+	firstToNew.translation() /= rescaleFactor;
 
 
 	// really no lock required, as we are initializing.

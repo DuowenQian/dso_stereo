@@ -28,6 +28,7 @@
 #include "util/NumType.h"
  
 #include "FullSystem/HessianBlocks.h"
+#include <opencv2/core/core.hpp> //include openCV
 namespace dso
 {
 
@@ -69,6 +70,7 @@ public:
 	Mat22f gradH_eig;
 	float energyTH;
 	float u,v;
+	float u_rgbd, v_rgbd;
 	FrameHessian* host;
 	int idxInImmaturePoints;
 
@@ -78,12 +80,15 @@ public:
 
 	float idepth_min;
 	float idepth_max;
+	float idepth_min_rgbd;
+	float idepth_max_rgbd;
 	float idepth_rgbd;
 	ImmaturePoint(int u_, int v_, FrameHessian* host_, float type, CalibHessian* HCalib);
+	ImmaturePoint(float u_, float v_, FrameHessian* host_, CalibHessian* HCalib);
 	~ImmaturePoint();
 
-	ImmaturePointStatus getRgbdDepth(FrameHessian* frame);
-	ImmaturePointStatus traceOn(FrameHessian* frame, const Mat33f &hostToFrame_KRKi, const Vec3f &hostToFrame_Kt, const Vec2f &hostToFrame_affine, CalibHessian* HCalib, bool debugPrint=false);
+	ImmaturePointStatus getPixelDepth(FrameHessian* frame, cv::Mat &imDepth);
+	ImmaturePointStatus traceOn(FrameHessian* frame, Mat33f hostToFrame_KRKi, Vec3f hostToFrame_Kt, Vec2f hostToFrame_affine, CalibHessian* HCalib, bool debugPrint=false);
 
 	ImmaturePointStatus lastTraceStatus;
 	Vec2f lastTraceUV;

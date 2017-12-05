@@ -26,6 +26,7 @@
 #include "FullSystem/ImmaturePoint.h"
 #include "util/FrameShell.h"
 #include "FullSystem/ResidualProjections.h"
+#include <opencv2/core/core.hpp> //include openCV
 
 namespace dso
 {
@@ -56,17 +57,47 @@ ImmaturePoint::ImmaturePoint(int u_, int v_, FrameHessian* host_, float type, Ca
 	energyTH = patternNum*setting_outlierTH;
 	energyTH *= setting_overallEnergyTHWeight*setting_overallEnergyTHWeight;
 
-	idepth_GT=0;
 	quality=10000;
+}
+
+
+ImmaturePoint::ImmaturePoint(float u_, float v_, FrameHessian* host_, CalibHessian* HCalib)
+        : u(u_), v(v_), host(host_), idepth_min(0), idepth_max(NAN), lastTraceStatus(IPS_UNINITIALIZED)
+{
+    gradH.setZero();  //Mat22f gradH
+
+    for(int idx=0;idx<patternNum;idx++)
+    {
+        int dx = patternP[idx][0];
+        int dy = patternP[idx][1];
+
+        Vec3f ptc = getInterpolatedElement33BiLin(host->dI, u+dx, v+dy,wG[0]);
+
+        color[idx] = ptc[0];
+        if(!std::isfinite(color[idx])) {energyTH=NAN; return;}
+
+        gradH += ptc.tail<2>()  * ptc.tail<2>().transpose();
+
+        weights[idx] = sqrtf(setting_outlierTHSumComponent / (setting_outlierTHSumComponent + ptc.tail<2>().squaredNorm()));
+    }
+
+    energyTH = patternNum*setting_outlierTH;
+    energyTH *= setting_overallEnergyTHWeight*setting_overallEnergyTHWeight;
+
+    quality=10000;
+
 }
 
 ImmaturePoint::~ImmaturePoint()
 {
 }
 
-ImmaturePointStatus ImmaturePoint::getRgbdDepth(FrameHessian* frame)
+ImmaturePointStatus ImmaturePoint::getPixelDepth(FrameHessian* frame, cv::Mat &imDepth)
 {
-	idepth_rgbd = 1; //something
+	const float d = imDepth.at<float>(this->v,this->u);
+	idepth_rgbd = 1/d; //something
+	idepth_min = 1/d;
+	idepth_max = 1/d;
 	return lastTraceStatus = ImmaturePointStatus::IPS_GOOD;
 }
 
@@ -76,7 +107,7 @@ ImmaturePointStatus ImmaturePoint::getRgbdDepth(FrameHessian* frame)
  * * UPDATED -> point has been updated.
  * * SKIP -> point has not been updated.
  */
-ImmaturePointStatus ImmaturePoint::traceOn(FrameHessian* frame,const Mat33f &hostToFrame_KRKi, const Vec3f &hostToFrame_Kt, const Vec2f& hostToFrame_affine, CalibHessian* HCalib, bool debugPrint)
+ImmaturePointStatus ImmaturePoint::traceOn(FrameHessian* frame, Mat33f hostToFrame_KRKi,  Vec3f hostToFrame_Kt,  Vec2f hostToFrame_affine, CalibHessian* HCalib, bool debugPrint)
 {
 	if(lastTraceStatus == ImmaturePointStatus::IPS_OOB) return lastTraceStatus;
 

@@ -38,10 +38,16 @@
 #include "FullSystem/ImmaturePoint.h"
 #include "util/nanoflann.h"
 #include <opencv2/core/core.hpp> //include openCV
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
 
 #if !defined(__SSE3__) && !defined(__SSE2__) && !defined(__SSE1__)
 #include "SSE2NEON.h"
 #endif
+
+using namespace cv;
+using namespace std;
 
 namespace dso
 {
@@ -784,6 +790,7 @@ void CoarseInitializer::setFirstRgbd(	CalibHessian* HCalib, FrameHessian* newFra
 	bool* statusMapB = new bool[w[0]*h[0]];
 
 	float densities[] = {0.03,0.05,0.15,0.5,1};
+	memset(idepth[0], 0, sizeof(float)*w[0]*h[0]);
 
 	for(int lvl=0; lvl<pyrLevelsUsed; lvl++) // for each pyramid level
 	{
@@ -808,10 +815,9 @@ void CoarseInitializer::setFirstRgbd(	CalibHessian* HCalib, FrameHessian* newFra
 		{
 			if(lvl==0 && statusMap[x+y*wl] != 0) //if first pyr level and the pixel is a selected pixel according to statusMap,
 			{
-				const float d = imDepth.at<float>(y,x);
 
 				ImmaturePoint* pt = new ImmaturePoint(x, y, firstFrame, statusMap[x+y*wl], HCalib);
-				ImmaturePointStatus stat = pt->getRgbdDepth(firstFrame);
+				ImmaturePointStatus stat = pt->getPixelDepth(firstFrame, imDepth);
 
 				if(stat==ImmaturePointStatus::IPS_GOOD)
 				{
@@ -824,6 +830,7 @@ void CoarseInitializer::setFirstRgbd(	CalibHessian* HCalib, FrameHessian* newFra
 					pl[nl].lastHessian=0;
 					pl[nl].lastHessian_new=0;
 					pl[nl].my_type= (lvl!=0) ? 1 : statusMap[x+y*wl];
+					idepth[0][x+wl*y] = pt->idepth_rgbd;
 
 					Eigen::Vector3f* cpt = firstFrame->dIp[lvl] + x + y*w[lvl];
 					float sumGrad2=0;
@@ -851,6 +858,7 @@ void CoarseInitializer::setFirstRgbd(	CalibHessian* HCalib, FrameHessian* newFra
 					pl[nl].lastHessian=0;
 					pl[nl].lastHessian_new=0;
 					pl[nl].my_type= (lvl!=0) ? 1 : statusMap[x+y*wl];
+					idepth[0][x+wl*y] = 0.01;
 
 					Eigen::Vector3f* cpt = firstFrame->dIp[lvl] + x + y*w[lvl];
 					float sumGrad2=0;
@@ -871,6 +879,11 @@ void CoarseInitializer::setFirstRgbd(	CalibHessian* HCalib, FrameHessian* newFra
 
 			if(lvl!=0 && statusMapB[x+y*wl]) //if other pyramid levels and the pixel is a selected pixel according to statusMapB,
 			{
+			  	int lvlm1 = lvl-1;
+				int wlm1 = w[lvlm1];
+				float* idepth_l = idepth[lvl];
+				float* idepth_lm = idepth[lvlm1];
+
 				pl[nl].u = x+0.1;
 				pl[nl].v = y+0.1;
 				pl[nl].idepth = 1;
@@ -880,6 +893,12 @@ void CoarseInitializer::setFirstRgbd(	CalibHessian* HCalib, FrameHessian* newFra
 				pl[nl].lastHessian=0;
 				pl[nl].lastHessian_new=0;
 				pl[nl].my_type= (lvl!=0) ? 1 : statusMap[x+y*wl];
+
+				int bidx = 2*x   + 2*y*wlm1;
+				idepth_l[x + y*wl] = idepth_lm[bidx] +
+											idepth_lm[bidx+1] +
+											idepth_lm[bidx+wlm1] +
+											idepth_lm[bidx+wlm1+1];
 
 				Eigen::Vector3f* cpt = firstFrame->dIp[lvl] + x + y*w[lvl];
 				float sumGrad2=0;
@@ -903,6 +922,14 @@ void CoarseInitializer::setFirstRgbd(	CalibHessian* HCalib, FrameHessian* newFra
 	}
 	delete[] statusMap;
 	delete[] statusMapB;
+
+/*
+	// Convert idepth[0] back to cv::Mat and display depth image after setFirstRgbd CV_32F
+	cv::Mat imDepthAfterSetFirst(h[0], w[0], DataType<float>::type, idepth[0]);
+	namedWindow( "Display window", WINDOW_AUTOSIZE );
+	imshow("Display window",imDepthAfterSetFirst);
+	waitKey(0);
+*/
 
 	makeNN();
 
