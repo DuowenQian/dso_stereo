@@ -180,13 +180,17 @@ private:
 	Vec4 trackNewCoarse(FrameHessian* fh, cv::Mat &imDepth);
 	Vec4 trackNewCoarse(FrameHessian* fh);
 	void traceNewCoarse(FrameHessian* fh);
+
+	void traceNewCoarseNonKey(FrameHessian* fh, cv::Mat &imDepth); // NEW
+	void traceNewCoarseKey(FrameHessian* fh); // NEW
+
 	void activatePoints();
 	void activatePointsMT();
 	void activatePointsOldFirst();
 	void flagPointsForRemoval();
 	void makeNewTraces(FrameHessian* newFrame, float* gtDepth);
 	void initializeFromInitializer(FrameHessian* newFrame);
-	void initializeFromInitializer(FrameHessian* newFrame, cv::Mat &imDepth);
+	void initializeFromInitializer(FrameHessian* newFrame, cv::Mat &imDepth); // NEW
 	void flagFramesForMarginalization(FrameHessian* newFH);
 
 
@@ -303,7 +307,10 @@ private:
  */
 
 	void makeKeyFrame( FrameHessian* fh);
+	void makeKeyFrame( FrameHessian* fh, cv::Mat &imDepth);
+	void makeNonKeyFrame( FrameHessian* fh, cv::Mat &imDepth);
 	void makeNonKeyFrame( FrameHessian* fh);
+	void deliverTrackedFrame(FrameHessian* fh, cv::Mat &imDepth, bool needKF);
 	void deliverTrackedFrame(FrameHessian* fh, bool needKF);
 	void mappingLoop();
 

@@ -292,7 +292,7 @@ Vec4 FullSystem::trackNewCoarse(FrameHessian* fh, cv::Mat &imDepth)
 
 	AffLight aff_last_2_l = AffLight(0,0);
 
-	std::vector<SE3,Eigen::aligned_allocator<SE3>> lastF_2_fh_tries;
+	std::vector<SE3,Eigen::aligned_allocator<SE3>> lastF_2_fh_tries; //create a vector of SE3s which represents the transform hypotheses
 	if(allFrameHistory.size() == 2)
 	{
 		initializeFromInitializer(fh, imDepth); // INITIALIZE
@@ -300,7 +300,7 @@ Vec4 FullSystem::trackNewCoarse(FrameHessian* fh, cv::Mat &imDepth)
 		lastF_2_fh_tries.push_back(SE3(Eigen::Matrix<double, 3, 3>::Identity(), Eigen::Matrix<double,3,1>::Zero() ));
 
         for(float rotDelta=0.02; rotDelta < 0.05; rotDelta = rotDelta + 0.02)
-        {
+        { // try a bunch of different delta rotations
             lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,rotDelta,0,0), Vec3(0,0,0)));			// assume constant motion.
             lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,rotDelta,0), Vec3(0,0,0)));			// assume constant motion.
             lastF_2_fh_tries.push_back(SE3(Sophus::Quaterniond(1,0,0,rotDelta), Vec3(0,0,0)));			// assume constant motion.
@@ -700,6 +700,122 @@ Vec4 FullSystem::trackNewCoarse(FrameHessian* fh)
 	return Vec4(achievedRes[0], flowVecs[0], flowVecs[1], flowVecs[2]);
 }
 
+//process non key frame to refine key frame idepth
+void FullSystem::traceNewCoarseNonKey(FrameHessian* fh, cv::Mat &imDepth)
+{
+	boost::unique_lock<boost::mutex> lock(mapMutex);
+
+    // new idepth after refinement
+    float idepth_min_update = 0;
+    float idepth_max_update = 0;
+
+	//int trace_total=0, trace_good=0, trace_oob=0, trace_out=0, trace_skip=0, trace_badcondition=0, trace_uninitialized=0;
+
+	Mat33f K = Mat33f::Identity();
+	K(0,0) = Hcalib.fxl();
+	K(1,1) = Hcalib.fyl();
+	K(0,2) = Hcalib.cxl();
+	K(1,2) = Hcalib.cyl();
+	Mat33f Ki = K.inverse();
+
+	for(FrameHessian* host : frameHessians)		// go through all active frames
+	{
+		int trace_total = 0, trace_good = 0, trace_oob = 0, trace_out = 0, trace_skip = 0, trace_badcondition = 0, trace_uninitialized = 0;
+
+		SE3 hostToNew = fh->PRE_worldToCam * host->PRE_camToWorld; // trans from reference keyframe to newest frame
+		Mat33f KRKi = K * hostToNew.rotationMatrix().cast<float>() * K.inverse();
+		Mat33f KRi = K * hostToNew.rotationMatrix().inverse().cast<float>(); // NEW
+		Vec3f Kt = K * hostToNew.translation().cast<float>();
+		Vec3f t = hostToNew.translation().cast<float>();
+
+		Vec2f aff = AffLight::fromToVecExposure(host->ab_exposure, fh->ab_exposure, host->aff_g2l(), fh->aff_g2l()).cast<float>();
+
+		for(ImmaturePoint* ph : host->immaturePoints) // for all immature points in frame host
+		{
+			ImmaturePointStatus phTrackStatus = ph->traceOn(fh, KRKi, Kt, aff, &Hcalib, false ); //do temporal stereo match
+
+//NEW vvvvvv
+            if (phTrackStatus == ImmaturePointStatus::IPS_GOOD)
+            {
+				ImmaturePoint *phNonKey = new ImmaturePoint(ph->lastTraceUV(0), ph->lastTraceUV(1), fh, &Hcalib);
+
+				// project onto newest frame
+				Vec3f ptpMin = KRKi * (Vec3f(ph->u, ph->v, 1) / ph->idepth_min) + Kt;
+				float idepth_min_project = 1.0f / ptpMin[2];
+				Vec3f ptpMax = KRKi * (Vec3f(ph->u, ph->v, 1) / ph->idepth_max) + Kt;
+				float idepth_max_project = 1.0f / ptpMax[2];
+
+				phNonKey->idepth_min = idepth_min_project;
+				phNonKey->idepth_max = idepth_max_project;
+				phNonKey->u_rgbd = phNonKey->u;
+				phNonKey->v_rgbd = phNonKey->v;
+				phNonKey->idepth_min_rgbd = phNonKey->idepth_min;
+				phNonKey->idepth_max_rgbd = phNonKey->idepth_max;
+
+				// do static rgbd depth estimation
+				ImmaturePointStatus phNonKeyPointStatus = phNonKey->getPixelDepth(fh, imDepth);
+
+				// project back
+				Vec3f pinverse_min = KRi * (Ki * Vec3f(phNonKey->u_rgbd, phNonKey->v_rgbd, 1) / phNonKey->idepth_min_rgbd - t);
+				idepth_min_update = 1.0f / pinverse_min(2);
+
+				Vec3f pinverse_max = KRi * (Ki * Vec3f(phNonKey->u_rgbd, phNonKey->v_rgbd, 1) / phNonKey->idepth_max_rgbd - t);
+				idepth_max_update = 1.0f / pinverse_max(2);
+
+				ph->idepth_min = idepth_min_update;
+				ph->idepth_max = idepth_max_update;
+
+				delete phNonKey;
+            }
+//NEW ^^^^^^^^^^^
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_GOOD) trace_good++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_BADCONDITION) trace_badcondition++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_OOB) trace_oob++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_OUTLIER) trace_out++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_SKIPPED) trace_skip++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_UNINITIALIZED) trace_uninitialized++;
+			trace_total++;
+		}
+	}
+}
+
+//process keyframe
+void FullSystem::traceNewCoarseKey(FrameHessian* fh)
+{
+	boost::unique_lock<boost::mutex> lock(mapMutex);
+
+	int trace_total=0, trace_good=0, trace_oob=0, trace_out=0, trace_skip=0, trace_badcondition=0, trace_uninitialized=0;
+
+	Mat33f K = Mat33f::Identity();
+	K(0,0) = Hcalib.fxl();
+	K(1,1) = Hcalib.fyl();
+	K(0,2) = Hcalib.cxl();
+	K(1,2) = Hcalib.cyl();
+
+	for(FrameHessian* host : frameHessians)		// go through all active frames
+	{
+
+		SE3 hostToNew = fh->PRE_worldToCam * host->PRE_camToWorld;
+		Mat33f KRKi = K * hostToNew.rotationMatrix().cast<float>() * K.inverse();
+		Vec3f Kt = K * hostToNew.translation().cast<float>();
+
+		Vec2f aff = AffLight::fromToVecExposure(host->ab_exposure, fh->ab_exposure, host->aff_g2l(), fh->aff_g2l()).cast<float>();
+
+		for(ImmaturePoint* ph : host->immaturePoints)
+		{
+			ImmaturePointStatus phTrackStatus = ph->traceOn(fh, KRKi, Kt, aff, &Hcalib, false );
+
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_GOOD) trace_good++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_BADCONDITION) trace_badcondition++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_OOB) trace_oob++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_OUTLIER) trace_out++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_SKIPPED) trace_skip++;
+			if(ph->lastTraceStatus==ImmaturePointStatus::IPS_UNINITIALIZED) trace_uninitialized++;
+			trace_total++;
+		}
+	}
+
+}
 
 void FullSystem::traceNewCoarse(FrameHessian* fh)
 {
@@ -1119,7 +1235,7 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, cv::Mat &depth_image, 
 		bool needToMakeKF = false;
 		if(setting_keyframesPerSecond > 0) // if a certain keyframesPerSecond is required,
 		{
-			needToMakeKF = allFrameHistory.size()== 1 || //make KF if first frame or if required time has come
+			needToMakeKF = allFrameHistory.size()== 2 || //make KF if first frame or if required time has come
 					(fh->shell->timestamp - allKeyFramesHistory.back()->timestamp) > 0.95f/setting_keyframesPerSecond;
 		}
 		else
@@ -1147,7 +1263,7 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, cv::Mat &depth_image, 
 
 
 		lock.unlock();
-		deliverTrackedFrame(fh, needToMakeKF); // Deliver the tracked frame for display purposes?
+		deliverTrackedFrame(fh, imDepth, needToMakeKF); // Deliver the tracked frame for display purposes?
 		return;
 	}
 }
@@ -1231,7 +1347,7 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 					coarseTracker->lastRef_aff_g2l, fh->shell->aff_g2l);
 
 			// BRIGHTNESS CHECK
-			needToMakeKF = allFrameHistory.size()== 1 ||
+			needToMakeKF = allFrameHistory.size()== 2 ||
 					setting_kfGlobalWeight*setting_maxShiftWeightT *  sqrtf((double)tres[1]) / (wG[0]+hG[0]) +
 					setting_kfGlobalWeight*setting_maxShiftWeightR *  sqrtf((double)tres[2]) / (wG[0]+hG[0]) +
 					setting_kfGlobalWeight*setting_maxShiftWeightRT * sqrtf((double)tres[3]) / (wG[0]+hG[0]) +
@@ -1255,7 +1371,7 @@ void FullSystem::addActiveFrame( ImageAndExposure* image, int id )
 	}
 }
 
-void FullSystem::deliverTrackedFrame(FrameHessian* fh, bool needKF)
+void FullSystem::deliverTrackedFrame(FrameHessian* fh, cv::Mat &imDepth, bool needKF)
 {
 
 
@@ -1277,14 +1393,55 @@ void FullSystem::deliverTrackedFrame(FrameHessian* fh, bool needKF)
 
 
 
-		if(needKF) makeKeyFrame(fh); // this will also update the refFrameID of coarseTracker_forNewKF
-		else makeNonKeyFrame(fh);
+		if(needKF) makeKeyFrame(fh,imDepth); // this will also update the refFrameID of coarseTracker_forNewKF
+		else makeNonKeyFrame(fh, imDepth);
 	}
 	else
 	{
 		boost::unique_lock<boost::mutex> lock(trackMapSyncMutex);
 		unmappedTrackedFrames.push_back(fh); // where unmappedTrackedFrames is a deque (double ended queue)
 		if(needKF) needNewKFAfter=fh->shell->trackingRef->id; // if KF is needed, store current frame id in needNewKFAfter. (NOT SURE IF EVER USED)
+		trackedFrameSignal.notify_all();
+
+		while(coarseTracker_forNewKF->refFrameID == -1 && coarseTracker->refFrameID == -1 )
+		{
+			mappedFrameSignal.wait(lock);
+		}
+
+		lock.unlock();
+	}
+}
+
+void FullSystem::deliverTrackedFrame(FrameHessian* fh, bool needKF)
+{
+
+
+	if(linearizeOperation)
+	{
+		if(goStepByStep && lastRefStopID != coarseTracker->refFrameID)
+		{
+			MinimalImageF3 img(wG[0], hG[0], fh->dI);
+			IOWrap::displayImage("frameToTrack", &img);
+			while(true)
+			{
+				char k=IOWrap::waitKey(0);
+				if(k==' ') break;
+				handleKey( k );
+			}
+			lastRefStopID = coarseTracker->refFrameID;
+		}
+		else handleKey( IOWrap::waitKey(1) );
+
+
+
+		if(needKF) makeKeyFrame(fh);
+		else makeNonKeyFrame(fh);
+	}
+	else
+	{
+		boost::unique_lock<boost::mutex> lock(trackMapSyncMutex);
+		unmappedTrackedFrames.push_back(fh);
+		if(needKF) needNewKFAfter=fh->shell->trackingRef->id;
 		trackedFrameSignal.notify_all();
 
 		while(coarseTracker_forNewKF->refFrameID == -1 && coarseTracker->refFrameID == -1 )
@@ -1378,6 +1535,21 @@ void FullSystem::blockUntilMappingIsFinished()
 
 }
 
+void FullSystem::makeNonKeyFrame( FrameHessian* fh, cv::Mat &imDepth)
+{
+	// needs to be set by mapping thread. no lock required since we are in mapping thread.
+	{
+		boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
+		assert(fh->shell->trackingRef != 0);
+		fh->shell->camToWorld = fh->shell->trackingRef->camToWorld * fh->shell->camToTrackingRef;
+		fh->setEvalPT_scaled(fh->shell->camToWorld.inverse(),fh->shell->aff_g2l);
+	}
+
+	//traceNewCoarse(fh);
+	traceNewCoarseNonKey(fh, imDepth);
+	delete fh;
+}
+
 void FullSystem::makeNonKeyFrame( FrameHessian* fh)
 {
 	// needs to be set by mapping thread. no lock required since we are in mapping thread.
@@ -1390,6 +1562,163 @@ void FullSystem::makeNonKeyFrame( FrameHessian* fh)
 
 	traceNewCoarse(fh);
 	delete fh;
+}
+
+void FullSystem::makeKeyFrame( FrameHessian* fh, cv::Mat &imDepth)
+{
+	// needs to be set by mapping thread
+	{
+		boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
+		assert(fh->shell->trackingRef != 0);
+		fh->shell->camToWorld = fh->shell->trackingRef->camToWorld * fh->shell->camToTrackingRef;
+		fh->setEvalPT_scaled(fh->shell->camToWorld.inverse(),fh->shell->aff_g2l);
+	}
+
+	traceNewCoarse(fh);
+
+	boost::unique_lock<boost::mutex> lock(mapMutex);
+
+	// =========================== Flag Frames to be Marginalized. =========================
+	flagFramesForMarginalization(fh);
+
+
+	// =========================== add New Frame to Hessian Struct. =========================
+	fh->idx = frameHessians.size();
+	frameHessians.push_back(fh);
+	fh->frameID = allKeyFramesHistory.size();
+	allKeyFramesHistory.push_back(fh->shell);
+	ef->insertFrame(fh, &Hcalib);
+
+	setPrecalcValues();
+
+
+
+	// =========================== add new residuals for old points =========================
+	int numFwdResAdde=0;
+	for(FrameHessian* fh1 : frameHessians)		// go through all active frames
+	{
+		if(fh1 == fh) continue;
+		for(PointHessian* ph : fh1->pointHessians)
+		{
+			PointFrameResidual* r = new PointFrameResidual(ph, fh1, fh);
+			r->setState(ResState::IN);
+			ph->residuals.push_back(r);
+			ef->insertResidual(r);
+			ph->lastResiduals[1] = ph->lastResiduals[0];
+			ph->lastResiduals[0] = std::pair<PointFrameResidual*, ResState>(r, ResState::IN);
+			numFwdResAdde+=1;
+		}
+	}
+
+
+
+
+	// =========================== Activate Points (& flag for marginalization). =========================
+	activatePointsMT();
+	ef->makeIDX();
+
+
+
+
+	// =========================== OPTIMIZE ALL =========================
+
+	fh->frameEnergyTH = frameHessians.back()->frameEnergyTH;
+	float rmse = optimize(setting_maxOptIterations);
+
+
+
+
+
+	// =========================== Figure Out if INITIALIZATION FAILED =========================
+	if(allKeyFramesHistory.size() <= 4)
+	{
+		if(allKeyFramesHistory.size()==2 && rmse > 20*benchmark_initializerSlackFactor)
+		{
+			printf("I THINK INITIALIZATINO FAILED! Resetting.\n");
+			initFailed=true;
+		}
+		if(allKeyFramesHistory.size()==3 && rmse > 13*benchmark_initializerSlackFactor)
+		{
+			printf("I THINK INITIALIZATINO FAILED! Resetting.\n");
+			initFailed=true;
+		}
+		if(allKeyFramesHistory.size()==4 && rmse > 9*benchmark_initializerSlackFactor)
+		{
+			printf("I THINK INITIALIZATINO FAILED! Resetting.\n");
+			initFailed=true;
+		}
+	}
+
+
+
+    if(isLost) return;
+
+
+
+
+	// =========================== REMOVE OUTLIER =========================
+	removeOutliers();
+
+
+
+
+	{
+		boost::unique_lock<boost::mutex> crlock(coarseTrackerSwapMutex);
+		coarseTracker_forNewKF->makeK(&Hcalib);
+		coarseTracker_forNewKF->setCoarseTrackingRef(frameHessians, imDepth, Hcalib);
+
+
+
+        coarseTracker_forNewKF->debugPlotIDepthMap(&minIdJetVisTracker, &maxIdJetVisTracker, outputWrapper);
+        coarseTracker_forNewKF->debugPlotIDepthMapFloat(outputWrapper);
+	}
+
+
+	debugPlot("post Optimize");
+
+
+
+
+
+
+	// =========================== (Activate-)Marginalize Points =========================
+	flagPointsForRemoval();
+	ef->dropPointsF();
+	getNullspaces(
+			ef->lastNullspaces_pose,
+			ef->lastNullspaces_scale,
+			ef->lastNullspaces_affA,
+			ef->lastNullspaces_affB);
+	ef->marginalizePointsF();
+
+
+
+	// =========================== add new Immature points & new residuals =========================
+	makeNewTraces(fh, 0);
+
+
+
+
+
+    for(IOWrap::Output3DWrapper* ow : outputWrapper)
+    {
+        ow->publishGraph(ef->connectivityMap);
+        ow->publishKeyframes(frameHessians, false, &Hcalib);
+    }
+
+
+
+	// =========================== Marginalize Frames =========================
+
+	for(unsigned int i=0;i<frameHessians.size();i++)
+		if(frameHessians[i]->flaggedForMarginalization)
+			{marginalizeFrame(frameHessians[i]); i=0;}
+
+
+
+	printLogLine();
+    //printEigenValLine();
+
 }
 
 void FullSystem::makeKeyFrame( FrameHessian* fh)
@@ -1548,7 +1877,6 @@ void FullSystem::makeKeyFrame( FrameHessian* fh)
     //printEigenValLine();
 
 }
-
 
 void FullSystem::initializeFromInitializer(FrameHessian* newFrame, cv::Mat &imDepth)
 {

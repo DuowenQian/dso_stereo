@@ -55,8 +55,8 @@ public:
 			IOWrap::Output3DWrapper* wrap=0);
 
 	void setCTRefForFirstFrame(std::vector<FrameHessian*> frameHessians);
+	void setCoarseTrackingRef(std::vector<FrameHessian*> frameHessians, cv::Mat &imDepth, CalibHessian Hcalib);
 	void setCoarseTrackingRef(std::vector<FrameHessian*> frameHessians);
-
 	void makeK(
 			CalibHessian* HCalib);
 
@@ -90,6 +90,7 @@ public:
 private:
 
 
+	void makeCoarseDepthL0(std::vector<FrameHessian*> frameHessians, cv::Mat &imDepth, CalibHessian Hcalib);
 	void makeCoarseDepthL0(std::vector<FrameHessian*> frameHessians);
 	void makeCoarseDepthForFirstFrame(FrameHessian* fh);
 
